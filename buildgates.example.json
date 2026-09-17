@@ -1,0 +1,18 @@
+{
+  "memberPrefix": "m_",
+  "nullJustificationPrefix": "// untrust-allow-null:",
+  "minimumNullJustificationCharacters": 40,
+  "forbiddenMethods": [
+    {
+      "containingType": "System.Console",
+      "method": "WriteLine",
+      "message": "Use the application's structured logger instead."
+    },
+    {
+      "containingType": "System.IO.File",
+      "method": "ReadAllText",
+      "message": "Use the application's approved, validated file-access abstraction instead."
+    }
+  ]
+}
+
