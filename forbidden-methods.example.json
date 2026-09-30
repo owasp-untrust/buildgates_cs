@@ -1,7 +1,5 @@
 {
-  "memberPrefix": "m_",
-  "nullJustificationPrefix": "// untrust-allow-null:",
-  "minimumNullJustificationCharacters": 40,
+  "forbidHttpRequestBodyAccess": true,
   "forbiddenMethods": [
     {
       "containingType": "System.Console",
@@ -15,4 +13,3 @@
     }
   ]
 }
-

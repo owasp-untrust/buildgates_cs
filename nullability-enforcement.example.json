@@ -1,0 +1,17 @@
+{
+  "nullJustificationPrefix": "untrust-null-represents-no-value:",
+  "minimumNullJustificationCharacters": 40,
+  "minimumNoValueDescriptionCharacters": 15,
+  "nullabilityExemptions": [
+    {
+      "typeAssignedTo": "System.IFormatProvider",
+      "asDefaultArg": true,
+      "justification": "The standard optional format-provider convention uses null to select the ambient provider."
+    },
+    {
+      "methodNamePrefix": "Is",
+      "asOutValue": true,
+      "justification": "The separate Is-method contract gate rejects Is methods with out parameters and provides the required migration guidance."
+    }
+  ]
+}

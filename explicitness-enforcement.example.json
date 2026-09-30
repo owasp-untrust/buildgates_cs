@@ -1,0 +1,7 @@
+{
+  "forbidStaticVirtualInterfaceMembers": true,
+  "staticVirtualJustificationPrefix": "untrust-static-virtual-is-safe:",
+  "minimumStaticVirtualJustificationCharacters": 40,
+  "forbidLockKeyword": true,
+  "requireObviousVarType": true
+}

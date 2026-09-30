@@ -1,0 +1,10 @@
+{
+  "memberPrefix": "m_",
+  "constFieldsExmptMemberPrefix": true,
+  "konstantsInUpperCase": true,
+  "requireBlocksForControlFlow": true,
+  "onePublicClassPerFile": true,
+  "allowGroupingOfCompleteClassHierarchies": true,
+  "allowAttributeClassesToShareFile": true,
+  "banComparingBoolValueToLiteral": true
+}

@@ -1,0 +1,7 @@
+{
+  "nullability-enforcement": "nullability-enforcement.example.json",
+  "forbidden-methods": "forbidden-methods.example.json",
+  "explicitness-enforcement": "explicitness-enforcement.example.json",
+  "code-style": "code-style.example.json",
+  "untrust-libs-enforcement": "untrust-libs-enforcement.example.json"
+}
