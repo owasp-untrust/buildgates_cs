@@ -11,6 +11,76 @@ namespace Owasp.Untrust.BuildGates.Tests;
 public sealed class BuildGateAnalyzerTests
 {
     [Fact]
+    public async Task Reports_StringIParsableTraitsWithoutStructuredPhaseJustification()
+    {
+        const string source = """
+            namespace Owasp.Untrust.VV.Traits
+            {
+                public interface IParsableTraits<TValue> { }
+            }
+            public sealed class UnsafeStringTraits : Owasp.Untrust.VV.Traits.IParsableTraits<string> { }
+            """;
+
+        ImmutableArray<Diagnostic> diagnostics = await AnalyzeAsync(source);
+
+        Diagnostic diagnostic = Assert.Single(diagnostics.Where(item => item.Id == BuildGateAnalyzer.StringParsableTraitsId));
+        Assert.Contains("StringTraits", diagnostic.GetMessage(), StringComparison.Ordinal);
+        Assert.Contains("charactersValidationPerformed", diagnostic.GetMessage(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Allows_StringIParsableTraitsWithStructuredPhaseJustification()
+    {
+        const string source = """
+            namespace Owasp.Untrust.VV.Traits
+            {
+                public interface IParsableTraits<TValue> { }
+                public sealed class AllowStringIParsableTraitsAttribute : System.Attribute
+                {
+                    public AllowStringIParsableTraitsAttribute(string justification, string boundsValidationPerformed, string charactersValidationPerformed, string normalizationPerformed, string stringValidationPerformed) { }
+                }
+            }
+            [Owasp.Untrust.VV.Traits.AllowStringIParsableTraits(
+                "This external protocol has a reviewed reason to bypass the standard string pipeline.",
+                "Bounds checked.",
+                "Characters checked.",
+                "Normalization checked.",
+                "String rules checked.")]
+            public sealed class ReviewedStringTraits : Owasp.Untrust.VV.Traits.IParsableTraits<string> { }
+            """;
+
+        ImmutableArray<Diagnostic> diagnostics = await AnalyzeAsync(source);
+
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Id == BuildGateAnalyzer.StringParsableTraitsId);
+    }
+
+    [Fact]
+    public async Task Reports_StringIParsableTraitsWhenAnyStructuredPhaseDescriptionIsTooShort()
+    {
+        const string source = """
+            namespace Owasp.Untrust.VV.Traits
+            {
+                public interface IParsableTraits<TValue> { }
+                public sealed class AllowStringIParsableTraitsAttribute : System.Attribute
+                {
+                    public AllowStringIParsableTraitsAttribute(string justification, string boundsValidationPerformed, string charactersValidationPerformed, string normalizationPerformed, string stringValidationPerformed) { }
+                }
+            }
+            [Owasp.Untrust.VV.Traits.AllowStringIParsableTraits(
+                "This external protocol has a reviewed reason to bypass the standard string pipeline.",
+                "Bounds checked.",
+                "short",
+                "Normalization checked.",
+                "String rules checked.")]
+            public sealed class IncompletelyReviewedStringTraits : Owasp.Untrust.VV.Traits.IParsableTraits<string> { }
+            """;
+
+        ImmutableArray<Diagnostic> diagnostics = await AnalyzeAsync(source);
+
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Id == BuildGateAnalyzer.StringParsableTraitsId);
+    }
+
+    [Fact]
     public async Task Reports_UnjustifiedNullLiteral()
     {
         ImmutableArray<Diagnostic> diagnostics = await AnalyzeAsync("public class Example { object? m_value = null; }");
@@ -597,6 +667,26 @@ public sealed class BuildGateAnalyzerTests
     }
 
     [Fact]
+    public async Task Merges_AncestorActiveConfigurationsWithoutReplacingThem()
+    {
+        string rootDirectory = Path.GetFullPath("buildgates-tests");
+        string configurationDirectory = Path.Combine(rootDirectory, "BusyBee", "src", "BusyBee.Api");
+        ImmutableArray<Diagnostic> diagnostics = await AnalyzeAsync(
+            """
+            public static class GlobalApi { public static void Block() { } }
+            public static class LocalApi { public static void Block() { } }
+            public class Example { void Run() { GlobalApi.Block(); LocalApi.Block(); } }
+            """,
+            new GlobalAnalyzerConfigOptionsProvider(configurationDirectory),
+            new InMemoryAdditionalText(Path.Combine(rootDirectory, "active-buildgates.json"), "{ \"global\": \"global.json\" }"),
+            new InMemoryAdditionalText(Path.Combine(rootDirectory, "global.json"), "{ \"forbiddenMethods\": [{ \"containingType\": \"GlobalApi\", \"method\": \"Block\", \"message\": \"Global rule.\" }] }"),
+            new InMemoryAdditionalText(Path.Combine(rootDirectory, "BusyBee", "active-buildgates.json"), "{ \"local\": \"local.json\" }"),
+            new InMemoryAdditionalText(Path.Combine(rootDirectory, "BusyBee", "local.json"), "{ \"forbiddenMethods\": [{ \"containingType\": \"LocalApi\", \"method\": \"Block\", \"message\": \"Local rule.\" }] }"));
+
+        Assert.Equal(2, diagnostics.Count(diagnostic => diagnostic.Id == BuildGateAnalyzer.ForbiddenMethodId));
+    }
+
+    [Fact]
     public async Task Reports_ConflictBetweenParentAndCurrentConfigurations()
     {
         string configurationDirectory = Path.GetFullPath(Path.Combine("buildgates-tests", "child"));
@@ -669,6 +759,36 @@ public sealed class BuildGateAnalyzerTests
             ("Main.cs", "public class Main { } public enum MainMode { Default }"));
 
         Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Id == BuildGateAnalyzer.PublicClassFileId);
+    }
+
+    [Fact]
+    public async Task Allows_SimplePublicRecordToShareAFileWithItsPublicClass()
+    {
+        ImmutableArray<Diagnostic> diagnostics = await AnalyzeFilesAsync(
+            null,
+            ("Main.cs", "public class Main { } public record Request(string Name);"));
+
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Id == BuildGateAnalyzer.PublicClassFileId);
+    }
+
+    [Fact]
+    public async Task Allows_PublicRecordWithOnlyStaticMembersToShareAFileWithItsPublicClass()
+    {
+        ImmutableArray<Diagnostic> diagnostics = await AnalyzeFilesAsync(
+            null,
+            ("Main.cs", "public class Main { } public record Request(string Name) { public static Request Empty { get; } = new(\"\"); public const int MAXIMUM_NAME_LENGTH = 100; }"));
+
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Id == BuildGateAnalyzer.PublicClassFileId);
+    }
+
+    [Fact]
+    public async Task Reports_PublicRecordWithABodySharingAFileWithItsPublicClass()
+    {
+        ImmutableArray<Diagnostic> diagnostics = await AnalyzeFilesAsync(
+            null,
+            ("Main.cs", "public class Main { } public record Request(string Name) { public string DisplayName => Name; }"));
+
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Id == BuildGateAnalyzer.PublicClassFileId);
     }
 
     [Fact]
@@ -832,6 +952,19 @@ public sealed class BuildGateAnalyzerTests
     [Fact]
     public async Task Reports_UnsafeHttpRequestBodyAccesses()
     {
+        const string policy = """
+            {
+              "forbiddenMethods": [
+                { "containingType": "Microsoft.AspNetCore.Http.HttpRequest", "method": "ReadFormAsync", "message": "Do not read request bodies directly." },
+                { "containingType": "Microsoft.AspNetCore.Http.HttpRequest", "method": "Form", "message": "Do not read request forms directly." },
+                { "containingType": "Microsoft.AspNetCore.Http.HttpRequest", "method": "Body", "message": "Do not read request bodies directly." },
+                { "containingType": "Microsoft.AspNetCore.Http.HttpRequest", "method": "BodyReader", "message": "Do not read request bodies directly." }
+              ],
+              "forbiddenTypes": [
+                { "name": "Microsoft.AspNetCore.Http.IFormCollection", "message": "Do not use IFormCollection." }
+              ]
+            }
+            """;
         ImmutableArray<Diagnostic> diagnostics = await AnalyzeAsync(
             """
             namespace Microsoft.AspNetCore.Http
@@ -855,9 +988,9 @@ public sealed class BuildGateAnalyzerTests
                     object third = request.BodyReader;
                 }
             }
-            """);
+            """, policy);
 
-        Assert.Equal(5, diagnostics.Count(diagnostic => diagnostic.Id == BuildGateAnalyzer.HttpRequestBodyAccessId));
+        Assert.Equal(5, diagnostics.Count(diagnostic => diagnostic.Id == BuildGateAnalyzer.ForbiddenMethodId));
     }
 
     [Fact]

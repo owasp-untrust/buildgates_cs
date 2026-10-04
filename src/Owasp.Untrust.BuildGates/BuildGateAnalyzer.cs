@@ -30,6 +30,7 @@ public sealed class BuildGateAnalyzer : DiagnosticAnalyzer
     public const string DenyByDefaultRouteAuthorizationId = "UBG016";
     public const string ExplicitRouteAuthorizationId = "UBG017";
     public const string ConstantFieldCapitalizationId = "UBG018";
+    public const string StringParsableTraitsId = "UBG019";
 
     private static readonly DiagnosticDescriptor NullLiteralRule = new(
         NullLiteralId,
@@ -146,7 +147,7 @@ public sealed class BuildGateAnalyzer : DiagnosticAnalyzer
     private static readonly DiagnosticDescriptor ControllerValidatedArgumentsRule = new(
         ControllerValidatedArgumentsId,
         "Controller route input requires validated values",
-        "Route input '{0}' must be a type derived from a VV validated-value base class, or a DTO whose public instance fields and properties are all such validated values.",
+        "Route input '{0}' must derive from Owasp.Untrust.VV.Core.ValidatedValue<...> or Owasp.Untrust.VV.CrossValidation.CrossValidatedValue<...>, or be a DTO whose public instance fields and properties all do. Before creating a new value type, first look for a suitable type in Owasp.Untrust.VV.BuiltIns.",
         "OWASP Untrust",
         DiagnosticSeverity.Error,
         isEnabledByDefault: true);
@@ -175,8 +176,16 @@ public sealed class BuildGateAnalyzer : DiagnosticAnalyzer
         DiagnosticSeverity.Error,
         isEnabledByDefault: true);
 
+    private static readonly DiagnosticDescriptor StringParsableTraitsRule = new(
+        StringParsableTraitsId,
+        "String parsing traits must enforce every string-validation phase",
+        "Type '{0}' implements IParsableTraits<string>. Use StringTraits<...> so bounds, character, normalization, and string validation phases are all enforced. Escape only with [AllowStringIParsableTraits(justification, boundsValidationPerformed, charactersValidationPerformed, normalizationPerformed, stringValidationPerformed)]; justification must be at least 40 characters and every phase description at least 10 characters.",
+        "OWASP Untrust",
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
-        ImmutableArray.Create(NullLiteralRule, MemberPrefixRule, ForbiddenMethodRule, StaticVirtualInterfaceMemberRule, IsMethodContractRule, TryMethodOutContractRule, NullableFirstArgumentRule, ConfigurationConflictRule, ControlFlowBlockRule, PublicClassFileRule, BooleanLiteralComparisonRule, LockKeywordRule, HttpRequestBodyAccessRule, VarTypeObviousnessRule, ControllerValidatedArgumentsRule, DenyByDefaultRouteAuthorizationRule, ExplicitRouteAuthorizationRule, ConstantFieldCapitalizationRule);
+        ImmutableArray.Create(NullLiteralRule, MemberPrefixRule, ForbiddenMethodRule, StaticVirtualInterfaceMemberRule, IsMethodContractRule, TryMethodOutContractRule, NullableFirstArgumentRule, ConfigurationConflictRule, ControlFlowBlockRule, PublicClassFileRule, BooleanLiteralComparisonRule, LockKeywordRule, HttpRequestBodyAccessRule, VarTypeObviousnessRule, ControllerValidatedArgumentsRule, DenyByDefaultRouteAuthorizationRule, ExplicitRouteAuthorizationRule, ConstantFieldCapitalizationRule, StringParsableTraitsRule);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -216,7 +225,9 @@ public sealed class BuildGateAnalyzer : DiagnosticAnalyzer
             startContext.RegisterSyntaxNodeAction(
                 nodeContext => CollectPublicTopLevelClass(nodeContext, publicClassesByFile),
                 SyntaxKind.ClassDeclaration,
-                SyntaxKind.InterfaceDeclaration);
+                SyntaxKind.InterfaceDeclaration,
+                SyntaxKind.RecordDeclaration,
+                SyntaxKind.RecordStructDeclaration);
             startContext.RegisterSyntaxNodeAction(
                 nodeContext => AnalyzeControlFlowBlock(nodeContext, policy),
                 SyntaxKind.IfStatement,
@@ -236,11 +247,14 @@ public sealed class BuildGateAnalyzer : DiagnosticAnalyzer
                 nodeContext => AnalyzeLockKeyword(nodeContext, policy),
                 SyntaxKind.LockStatement);
             startContext.RegisterSyntaxNodeAction(
-                nodeContext => AnalyzeHttpRequestBodyMemberAccess(nodeContext, policy),
+                nodeContext => AnalyzeForbiddenMemberAccess(nodeContext, policy),
                 SyntaxKind.SimpleMemberAccessExpression);
             startContext.RegisterSyntaxNodeAction(
-                nodeContext => AnalyzeIFormCollectionUse(nodeContext, policy),
+                nodeContext => AnalyzeForbiddenTypeUse(nodeContext, policy),
                 SyntaxKind.IdentifierName);
+            startContext.RegisterSyntaxNodeAction(
+                nodeContext => AnalyzeForbiddenImport(nodeContext, policy),
+                SyntaxKind.UsingDirective);
             startContext.RegisterSyntaxNodeAction(
                 nodeContext => AnalyzeVarDeclaration(nodeContext, policy),
                 SyntaxKind.VariableDeclaration);
@@ -257,6 +271,9 @@ public sealed class BuildGateAnalyzer : DiagnosticAnalyzer
                 SyntaxKind.PropertyDeclaration,
                 SyntaxKind.IndexerDeclaration,
                 SyntaxKind.EventDeclaration);
+            startContext.RegisterSymbolAction(
+                symbolContext => AnalyzeStringParsableTraits(symbolContext, policy),
+                SymbolKind.NamedType);
         });
     }
 
@@ -534,6 +551,47 @@ public sealed class BuildGateAnalyzer : DiagnosticAnalyzer
             policy.MinimumStaticVirtualJustificationCharacters));
     }
 
+    private static void AnalyzeStringParsableTraits(SymbolAnalysisContext context, BuildGatePolicy policy)
+    {
+        if (!policy.ForbidStringIParsableTraits || context.Symbol is not INamedTypeSymbol type ||
+            !type.AllInterfaces.Any(IsStringParsableTraitsContract) ||
+            HasStringParsableTraitsException(type))
+        {
+            return;
+        }
+
+        Location location = type.Locations.FirstOrDefault() ?? Location.None;
+        context.ReportDiagnostic(Diagnostic.Create(StringParsableTraitsRule, location, type.ToDisplayString()));
+    }
+
+    private static bool IsStringParsableTraitsContract(INamedTypeSymbol candidate) =>
+        candidate.Name == "IParsableTraits" &&
+        candidate.Arity == 1 &&
+        candidate.ContainingNamespace.ToDisplayString() == "Owasp.Untrust.VV.Traits" &&
+        candidate.TypeArguments[0].SpecialType == SpecialType.System_String;
+
+    private static bool HasStringParsableTraitsException(INamedTypeSymbol type)
+    {
+        AttributeData? exception = type.GetAttributes().SingleOrDefault(attribute =>
+            attribute.AttributeClass?.Name == "AllowStringIParsableTraitsAttribute" &&
+            attribute.AttributeClass.ContainingNamespace.ToDisplayString() == "Owasp.Untrust.VV.Traits");
+        if (exception?.ConstructorArguments.Length != 5)
+        {
+            return false;
+        }
+
+        int[] minimumLengths = { 40, 10, 10, 10, 10 };
+        for (int index = 0; index < minimumLengths.Length; index++)
+        {
+            if (exception.ConstructorArguments[index].Value is not string value || value.Length < minimumLengths[index])
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private static void AnalyzeControlFlowBlock(SyntaxNodeAnalysisContext context, BuildGatePolicy policy)
     {
         if (!policy.RequireBlocksForControlFlow ||
@@ -584,40 +642,47 @@ public sealed class BuildGateAnalyzer : DiagnosticAnalyzer
         context.ReportDiagnostic(Diagnostic.Create(LockKeywordRule, lockStatement.LockKeyword.GetLocation()));
     }
 
-    private static void AnalyzeHttpRequestBodyMemberAccess(SyntaxNodeAnalysisContext context, BuildGatePolicy policy)
+    private static void AnalyzeForbiddenMemberAccess(SyntaxNodeAnalysisContext context, BuildGatePolicy policy)
     {
-        if (!policy.ForbidHttpRequestBodyAccess || context.Node is not MemberAccessExpressionSyntax memberAccess ||
+        if (context.Node is not MemberAccessExpressionSyntax memberAccess ||
             context.SemanticModel.GetSymbolInfo(memberAccess, context.CancellationToken).Symbol is not ISymbol member ||
-            !string.Equals(member.ContainingType?.ToDisplayString(), "Microsoft.AspNetCore.Http.HttpRequest", StringComparison.Ordinal))
+            member is IMethodSymbol)
         {
             return;
         }
 
-        string? bannedMember = member switch
+        ForbiddenMethodPolicy? match = policy.ForbiddenMethods.FirstOrDefault(rule => rule.Matches(member));
+        if (match is not null)
         {
-            IMethodSymbol { Name: "ReadFormAsync" } => "HttpRequest.ReadFormAsync",
-            IPropertySymbol { Name: "Form" } => "HttpRequest.Form",
-            IPropertySymbol { Name: "Body" } => "HttpRequest.Body",
-            IPropertySymbol { Name: "BodyReader" } => "HttpRequest.BodyReader",
-            _ => null
-        };
-        if (bannedMember is not null && !HasBannedMethodJustification(memberAccess, bannedMember))
-        {
-            context.ReportDiagnostic(Diagnostic.Create(HttpRequestBodyAccessRule, memberAccess.GetLocation(), bannedMember));
+            context.ReportDiagnostic(Diagnostic.Create(ForbiddenMethodRule, memberAccess.GetLocation(), member.ToDisplayString(), match.Message));
         }
     }
 
-    private static void AnalyzeIFormCollectionUse(SyntaxNodeAnalysisContext context, BuildGatePolicy policy)
+    private static void AnalyzeForbiddenTypeUse(SyntaxNodeAnalysisContext context, BuildGatePolicy policy)
     {
-        if (!policy.ForbidHttpRequestBodyAccess || context.Node is not IdentifierNameSyntax identifier ||
+        if (context.Node is not IdentifierNameSyntax identifier ||
             context.SemanticModel.GetSymbolInfo(identifier, context.CancellationToken).Symbol is not INamedTypeSymbol type ||
-            !string.Equals(type.ToDisplayString(), "Microsoft.AspNetCore.Http.IFormCollection", StringComparison.Ordinal) ||
-            HasBannedMethodJustification(identifier, "IFormCollection"))
+            policy.ForbiddenTypes.FirstOrDefault(rule => rule.Matches(type)) is not ForbiddenTypePolicy match)
         {
             return;
         }
 
-        context.ReportDiagnostic(Diagnostic.Create(HttpRequestBodyAccessRule, identifier.GetLocation(), "IFormCollection"));
+        context.ReportDiagnostic(Diagnostic.Create(ForbiddenMethodRule, identifier.GetLocation(), type.ToDisplayString(), match.Message));
+    }
+
+    private static void AnalyzeForbiddenImport(SyntaxNodeAnalysisContext context, BuildGatePolicy policy)
+    {
+        if (context.Node is not UsingDirectiveSyntax usingDirective || usingDirective.Name is null)
+        {
+            return;
+        }
+
+        string importedNamespace = usingDirective.Name.ToString();
+        ForbiddenImportPolicy? match = policy.ForbiddenImports.FirstOrDefault(rule => rule.Matches(importedNamespace));
+        if (match is not null)
+        {
+            context.ReportDiagnostic(Diagnostic.Create(ForbiddenMethodRule, usingDirective.Name.GetLocation(), importedNamespace, match.Message));
+        }
     }
 
     private static void AnalyzeVarDeclaration(SyntaxNodeAnalysisContext context, BuildGatePolicy policy)
@@ -940,6 +1005,11 @@ public sealed class BuildGateAnalyzer : DiagnosticAnalyzer
             return;
         }
 
+        if (declaration is RecordDeclarationSyntax record && IsSimpleRecord(record, context.SemanticModel, context.CancellationToken))
+        {
+            return;
+        }
+
         if (context.SemanticModel.GetDeclaredSymbol(declaration, context.CancellationToken) is not INamedTypeSymbol @class ||
             @class.ContainingType is not null ||
             @class.DeclaredAccessibility != Accessibility.Public)
@@ -948,6 +1018,40 @@ public sealed class BuildGateAnalyzer : DiagnosticAnalyzer
         }
 
         publicClassesByFile.GetOrAdd(context.Node.SyntaxTree, static _ => new ConcurrentBag<INamedTypeSymbol>()).Add(@class);
+    }
+
+    private static bool IsSimpleRecord(
+        RecordDeclarationSyntax record,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (record.OpenBraceToken.RawKind == 0)
+        {
+            return true;
+        }
+
+        return record.Members.All(member => IsStaticRecordMember(member, semanticModel, cancellationToken));
+    }
+
+    private static bool IsStaticRecordMember(
+        MemberDeclarationSyntax member,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (member is FieldDeclarationSyntax field)
+        {
+            return field.Declaration.Variables.All(variable =>
+                semanticModel.GetDeclaredSymbol(variable, cancellationToken) is IFieldSymbol { IsStatic: true });
+        }
+
+        return semanticModel.GetDeclaredSymbol(member, cancellationToken) switch
+        {
+            IMethodSymbol { IsStatic: true } => true,
+            IPropertySymbol { IsStatic: true } => true,
+            IEventSymbol { IsStatic: true } => true,
+            INamedTypeSymbol { IsStatic: true } => true,
+            _ => false
+        };
     }
 
     private static void AnalyzePublicClassesPerFile(
@@ -1238,14 +1342,16 @@ internal sealed class BuildGatePolicy
     public bool AllowAttributeClassesToShareFile { get; set; } = true;
     public bool BanComparingBoolValueToLiteral { get; set; } = true;
     public bool ForbidLockKeyword { get; set; } = true;
-    public bool ForbidHttpRequestBodyAccess { get; set; } = true;
     public bool RequireObviousVarType { get; set; } = true;
     public bool RequireValidatedControllerRouteArguments { get; set; } = true;
     public bool RequireDenyByDefaultRouteAuthorization { get; set; } = true;
     public bool RequireExplicitControllerRouteAuthorization { get; set; } = true;
     public bool ConstFieldsExmptMemberPrefix { get; set; } = true;
     public bool KonstantsInUpperCase { get; set; } = true;
+    public bool ForbidStringIParsableTraits { get; set; } = true;
     public ImmutableArray<ForbiddenMethodPolicy> ForbiddenMethods { get; set; } = ImmutableArray<ForbiddenMethodPolicy>.Empty;
+    public ImmutableArray<ForbiddenTypePolicy> ForbiddenTypes { get; set; } = ImmutableArray<ForbiddenTypePolicy>.Empty;
+    public ImmutableArray<ForbiddenImportPolicy> ForbiddenImports { get; set; } = ImmutableArray<ForbiddenImportPolicy>.Empty;
     public ImmutableArray<GlobalAllowNullAssignmentPolicy> GlobalAllowNullAssignments { get; set; } = ImmutableArray<GlobalAllowNullAssignmentPolicy>.Empty;
     public ImmutableArray<string> ConfigurationConflicts => configurationConflicts.ToImmutableArray();
 
@@ -1297,14 +1403,21 @@ internal sealed class BuildGatePolicy
 
         string currentDirectory = Path.GetFullPath(configurationDirectory)
             .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        string? parentDirectory = Directory.GetParent(currentDirectory)?.FullName;
         var result = ImmutableArray.CreateBuilder<AdditionalText>();
-        if (!string.IsNullOrWhiteSpace(parentDirectory))
+        var ancestorDirectories = new Stack<string>();
+        for (DirectoryInfo? directory = new DirectoryInfo(currentDirectory);
+            directory is not null;
+            directory = directory.Parent)
         {
-            AddIfPresent(result, FindAdditionalFileAtPath(additionalFiles, Path.Combine(parentDirectory, ActiveConfigurationFileName)));
+            ancestorDirectories.Push(directory.FullName);
         }
 
-        AddIfPresent(result, FindAdditionalFileAtPath(additionalFiles, Path.Combine(currentDirectory, ActiveConfigurationFileName)));
+        while (ancestorDirectories.Count > 0)
+        {
+            string directory = ancestorDirectories.Pop();
+            AddIfPresent(result, FindAdditionalFileAtPath(additionalFiles, Path.Combine(directory, ActiveConfigurationFileName)));
+        }
+
         return result.ToImmutable();
     }
 
@@ -1408,16 +1521,26 @@ internal sealed class BuildGatePolicy
             MergeBoolean(policy, root, "allowAttributeClassesToShareFile", sourcePath, value => policy.AllowAttributeClassesToShareFile = value);
             MergeBoolean(policy, root, "banComparingBoolValueToLiteral", sourcePath, value => policy.BanComparingBoolValueToLiteral = value);
             MergeBoolean(policy, root, "forbidLockKeyword", sourcePath, value => policy.ForbidLockKeyword = value);
-            MergeBoolean(policy, root, "forbidHttpRequestBodyAccess", sourcePath, value => policy.ForbidHttpRequestBodyAccess = value);
             MergeBoolean(policy, root, "requireObviousVarType", sourcePath, value => policy.RequireObviousVarType = value);
             MergeBoolean(policy, root, "requireValidatedControllerRouteArguments", sourcePath, value => policy.RequireValidatedControllerRouteArguments = value);
             MergeBoolean(policy, root, "requireDenyByDefaultRouteAuthorization", sourcePath, value => policy.RequireDenyByDefaultRouteAuthorization = value);
             MergeBoolean(policy, root, "requireExplicitControllerRouteAuthorization", sourcePath, value => policy.RequireExplicitControllerRouteAuthorization = value);
+            MergeBoolean(policy, root, "forbidStringIParsableTraits", sourcePath, value => policy.ForbidStringIParsableTraits = value);
             MergeString(policy, root, "staticVirtualJustificationPrefix", sourcePath, value => policy.StaticVirtualJustificationPrefix = value);
             MergePositiveInteger(policy, root, "minimumStaticVirtualJustificationCharacters", sourcePath, value => policy.MinimumStaticVirtualJustificationCharacters = value);
             if (root.TryGetProperty("forbiddenMethods", out _))
             {
                 MergeForbiddenMethods(policy, ReadForbiddenMethods(root), sourcePath);
+            }
+
+            if (root.TryGetProperty("forbiddenTypes", out _))
+            {
+                policy.ForbiddenTypes = ReadForbiddenTypes(root);
+            }
+
+            if (root.TryGetProperty("forbiddenImports", out _))
+            {
+                policy.ForbiddenImports = ReadForbiddenImports(root);
             }
 
             if (root.TryGetProperty("nullabilityExemptions", out _))
@@ -1559,6 +1682,33 @@ internal sealed class BuildGatePolicy
         return result.ToImmutable();
     }
 
+    private static ImmutableArray<ForbiddenTypePolicy> ReadForbiddenTypes(JsonElement root) =>
+        ReadForbiddenNames(root, "forbiddenTypes").Select(rule => new ForbiddenTypePolicy(rule.Name, rule.Message)).ToImmutableArray();
+
+    private static ImmutableArray<ForbiddenImportPolicy> ReadForbiddenImports(JsonElement root) =>
+        ReadForbiddenNames(root, "forbiddenImports").Select(rule => new ForbiddenImportPolicy(rule.Name, rule.Message)).ToImmutableArray();
+
+    private static ImmutableArray<(string Name, string Message)> ReadForbiddenNames(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out JsonElement rules) || rules.ValueKind != JsonValueKind.Array)
+        {
+            return ImmutableArray<(string Name, string Message)>.Empty;
+        }
+
+        var result = ImmutableArray.CreateBuilder<(string Name, string Message)>();
+        foreach (JsonElement rule in rules.EnumerateArray())
+        {
+            string? name = ReadString(rule, "name");
+            string? message = ReadString(rule, "message");
+            if (!string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(message))
+            {
+                result.Add((name!, message!));
+            }
+        }
+
+        return result.ToImmutable();
+    }
+
     private static ImmutableArray<GlobalAllowNullAssignmentPolicy> ReadGlobalAllowNullAssignments(JsonElement root)
     {
         if (!root.TryGetProperty("nullabilityExemptions", out JsonElement rules) || rules.ValueKind != JsonValueKind.Array)
@@ -1583,7 +1733,8 @@ internal sealed class BuildGatePolicy
             bool asReturned = rule.TryGetProperty("asReturned", out JsonElement returned) && returned.ValueKind == JsonValueKind.True;
             bool asOutValue = rule.TryGetProperty("asOutValue", out JsonElement outValue) && outValue.ValueKind == JsonValueKind.True;
             bool asNullableFirstArgument = rule.TryGetProperty("asNullableFirstArgument", out JsonElement nullableFirstArgument) && nullableFirstArgument.ValueKind == JsonValueKind.True;
-            result.Add(new GlobalAllowNullAssignmentPolicy(typeAssignedTo, methodName, methodNamePrefix, justification!, asDefaultArg, asReturned, asOutValue, asNullableFirstArgument));
+            bool asArgument = rule.TryGetProperty("asArgument", out JsonElement argument) && argument.ValueKind == JsonValueKind.True;
+            result.Add(new GlobalAllowNullAssignmentPolicy(typeAssignedTo, methodName, methodNamePrefix, justification!, asDefaultArg, asReturned, asOutValue, asNullableFirstArgument, asArgument));
         }
 
         return result.ToImmutable();
@@ -1594,6 +1745,19 @@ internal sealed class BuildGatePolicy
 
     public bool AllowsNullAssignment(SyntaxNodeAnalysisContext context)
     {
+        if (context.Node.Parent is ArgumentSyntax argument &&
+            argument.Parent is BaseArgumentListSyntax argumentList &&
+            argumentList.Parent is InvocationExpressionSyntax invocation &&
+            context.SemanticModel.GetSymbolInfo(invocation, context.CancellationToken).Symbol is IMethodSymbol invokedMethod)
+        {
+            int argumentIndex = argumentList.Arguments.IndexOf(argument);
+            if (argumentIndex >= 0 && argumentIndex < invokedMethod.Parameters.Length &&
+                GlobalAllowNullAssignments.Any(rule => rule.AllowsArgument(invokedMethod.Parameters[argumentIndex].Type, invokedMethod)))
+            {
+                return true;
+            }
+        }
+
         if (context.Node.Parent?.Parent is ParameterSyntax parameter &&
             parameter.Default?.Value == context.Node &&
             context.SemanticModel.GetDeclaredSymbol(parameter, context.CancellationToken) is IParameterSymbol parameterSymbol)
@@ -1627,7 +1791,7 @@ internal sealed class BuildGatePolicy
 
 internal sealed class GlobalAllowNullAssignmentPolicy
 {
-    public GlobalAllowNullAssignmentPolicy(string? typeAssignedTo, string? methodName, string? methodNamePrefix, string justification, bool asDefaultArg, bool asReturned, bool asOutValue, bool asNullableFirstArgument)
+    public GlobalAllowNullAssignmentPolicy(string? typeAssignedTo, string? methodName, string? methodNamePrefix, string justification, bool asDefaultArg, bool asReturned, bool asOutValue, bool asNullableFirstArgument, bool asArgument)
     {
         TypeAssignedTo = typeAssignedTo;
         MethodName = methodName;
@@ -1637,6 +1801,7 @@ internal sealed class GlobalAllowNullAssignmentPolicy
         AsReturned = asReturned;
         AsOutValue = asOutValue;
         AsNullableFirstArgument = asNullableFirstArgument;
+        AsArgument = asArgument;
     }
 
     public string? TypeAssignedTo { get; }
@@ -1647,6 +1812,7 @@ internal sealed class GlobalAllowNullAssignmentPolicy
     public bool AsReturned { get; }
     public bool AsOutValue { get; }
     public bool AsNullableFirstArgument { get; }
+    public bool AsArgument { get; }
 
     public bool AllowsDefaultArgument(ITypeSymbol candidate) =>
         AsDefaultArg && MatchesType(candidate);
@@ -1660,6 +1826,9 @@ internal sealed class GlobalAllowNullAssignmentPolicy
     public bool AllowsNullableFirstArgument(ITypeSymbol valueType, IMethodSymbol method) =>
         AsNullableFirstArgument && MatchesType(valueType) && MatchesMethod(method);
 
+    public bool AllowsArgument(ITypeSymbol valueType, IMethodSymbol method) =>
+        AsArgument && MatchesType(valueType) && MatchesMethod(method);
+
     public bool SelectorEquals(GlobalAllowNullAssignmentPolicy other) =>
         string.Equals(TypeAssignedTo, other.TypeAssignedTo, StringComparison.Ordinal) &&
         string.Equals(MethodName, other.MethodName, StringComparison.Ordinal) &&
@@ -1667,7 +1836,8 @@ internal sealed class GlobalAllowNullAssignmentPolicy
         AsDefaultArg == other.AsDefaultArg &&
         AsReturned == other.AsReturned &&
         AsOutValue == other.AsOutValue &&
-        AsNullableFirstArgument == other.AsNullableFirstArgument;
+        AsNullableFirstArgument == other.AsNullableFirstArgument &&
+        AsArgument == other.AsArgument;
 
     private bool MatchesType(ITypeSymbol candidate) =>
         string.IsNullOrWhiteSpace(TypeAssignedTo) || GlobMatches(candidate.ToDisplayString().TrimEnd('?'), TypeAssignedTo!);
@@ -1732,6 +1902,9 @@ internal sealed class ForbiddenMethodPolicy
     public bool Matches(IMethodSymbol candidate) =>
         string.Equals(candidate.Name, Method, StringComparison.Ordinal) && MatchesType(candidate.ContainingType);
 
+    public bool Matches(ISymbol candidate) =>
+        string.Equals(candidate.Name, Method, StringComparison.Ordinal) && MatchesType(candidate.ContainingType);
+
     private bool MatchesType(INamedTypeSymbol? candidate)
     {
         for (INamedTypeSymbol? current = candidate; current is not null; current = IncludeSubclasses ? current.BaseType : null)
@@ -1750,4 +1923,20 @@ internal sealed class ForbiddenMethodPolicy
         return IncludeSubclasses && candidate?.AllInterfaces.Any(@interface =>
             string.Equals(@interface.ToDisplayString(), ContainingType, StringComparison.Ordinal)) is true;
     }
+}
+
+internal sealed class ForbiddenTypePolicy
+{
+    public ForbiddenTypePolicy(string name, string message) { Name = name; Message = message; }
+    public string Name { get; }
+    public string Message { get; }
+    public bool Matches(INamedTypeSymbol type) => string.Equals(type.ToDisplayString(), Name, StringComparison.Ordinal);
+}
+
+internal sealed class ForbiddenImportPolicy
+{
+    public ForbiddenImportPolicy(string name, string message) { Name = name; Message = message; }
+    public string Name { get; }
+    public string Message { get; }
+    public bool Matches(string importedNamespace) => string.Equals(importedNamespace, Name, StringComparison.Ordinal);
 }
