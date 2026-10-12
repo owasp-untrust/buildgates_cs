@@ -1,0 +1,19 @@
+{
+  "boxedPathGuidance": [
+    "Use Owasp.Untrust.BoxedPaths: PathSandbox sandbox = PathSandbox.BoxRoot(root);",
+    "BoxedPath path = BoxedPath.Of(sandbox, untrustedPath)."
+  ],
+  "boxedFileGuidance": [
+    "Use Owasp.Untrust.BoxedPaths.BoxedFile with a validated BoxedPath,",
+    "for example: string content = BoxedFile.ReadAllText(boxedPath)."
+  ],
+  "boxedDirectoryGuidance": [
+    "Use Owasp.Untrust.BoxedPaths.BoxedDirectoryInfo with a validated BoxedPath rooted by PathSandbox."
+  ],
+  "formatProviderNullGuidance": [
+    "The standard optional format-provider convention uses null to select the ambient provider."
+  ],
+  "minimalApiGuidance": [
+    "ASP.NET Core minimal APIs are forbidden. Use an MVC controller action with explicit authorization instead."
+  ]
+}

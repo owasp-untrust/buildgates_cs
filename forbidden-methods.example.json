@@ -5,11 +5,34 @@
       "containingType": "System.Console",
       "method": "WriteLine",
       "message": "Use the application's structured logger instead."
+    }
+  ],
+  "forbiddenTypes": [
+    {
+      "name": "System.IO.Path",
+      "message": "Use Owasp.Untrust.BoxedPaths: PathSandbox sandbox = PathSandbox.BoxRoot(root); BoxedPath path = BoxedPath.Of(sandbox, untrustedPath)."
     },
     {
-      "containingType": "System.IO.File",
-      "method": "ReadAllText",
-      "message": "Use the application's approved, validated file-access abstraction instead."
+      "name": "System.IO.File",
+      "message": "Use Owasp.Untrust.BoxedPaths.BoxedFile with a validated BoxedPath, for example: string content = BoxedFile.ReadAllText(boxedPath)."
+    },
+    {
+      "name": "System.IO.Directory",
+      "message": "Use Owasp.Untrust.BoxedPaths.BoxedDirectoryInfo with a validated BoxedPath rooted by PathSandbox."
+    }
+  ],
+  "forbiddenImports": [
+    {
+      "name": "System.IO.Path",
+      "message": "Use Owasp.Untrust.BoxedPaths.BoxedPath and PathSandbox instead of importing System.IO.Path."
+    },
+    {
+      "name": "System.IO.File",
+      "message": "Use Owasp.Untrust.BoxedPaths.BoxedFile instead of importing System.IO.File."
+    },
+    {
+      "name": "System.IO.Directory",
+      "message": "Use Owasp.Untrust.BoxedPaths.BoxedDirectoryInfo instead of importing System.IO.Directory."
     }
   ]
 }

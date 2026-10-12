@@ -1,5 +1,3 @@
 {
-  "requireValidatedControllerRouteArguments": true,
-  "requireDenyByDefaultRouteAuthorization": true,
-  "requireExplicitControllerRouteAuthorization": true
+  "requireValidatedControllerRouteArguments": true
 }

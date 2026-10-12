@@ -25,9 +25,6 @@ Owasp.Untrust.BuildGates is a Roslyn analyzer package. Referencing it makes norm
 - UBG012: `lock` is forbidden because it cannot coordinate a distributed system.
 - UBG013: direct HTTP request-body/form access is forbidden outside a reviewed boundary.
 - UBG014: `var` requires an obvious right-hand-side type.
-- UBG015: controller route inputs must use VV validated values.
-- UBG016: controller routes require `Program.cs` to enable deny-by-default authorization.
-- UBG017: every controller route requires a method-level `[Authorize(...)]` or `[AllowAnonymous]` attribute.
 - UBG004: static virtual interface members require a reviewed security justification.
 
 The analyzer is semantic for method calls: aliases, using static, and inherited methods resolve to the actual invoked symbol rather than a text match.
@@ -45,6 +42,7 @@ Reference the analyzer centrally, usually in Directory.Build.props:
   <AdditionalFiles Include="$(MSBuildThisFileDirectory)explicitness-enforcement.json" />
   <AdditionalFiles Include="$(MSBuildThisFileDirectory)code-style.json" />
   <AdditionalFiles Include="$(MSBuildThisFileDirectory)untrust-libs-enforcement.json" />
+  <AdditionalFiles Include="$(ProjectAssetsFile)" Condition="Exists('$(ProjectAssetsFile)')" Link="project.assets.json" />
 </ItemGroup>
 ~~~
 
@@ -72,12 +70,13 @@ an error; a child configuration cannot silently override a parent policy. Set
 to `CompilerVisibleProperty`) when that folder is above the individual project directory.
 
 Every referenced JSON file must be included as an MSBuild `AdditionalFiles` item beside
-the manifest. `explicitness-enforcement.json` owns static-virtual-interface policy;
-`code-style.json` owns naming and block-style conventions. A fragment owns only its category's properties,
-preventing unrelated policy sections from competing for the same top-level fields. The
-analyzer still accepts one legacy `buildgates.json` file when no active manifest is supplied.
+the manifest. `explicitness-enforcement.json` owns explicit type, route-input, and route-authorization policy;
+`code-style.json` owns naming, block-style, static-virtual-interface, and method-contract conventions. A fragment owns only its category's properties,
+preventing unrelated policy sections from competing for the same top-level fields.
 
 Set includeSubclasses to true on a forbidden-method rule when calls declared on derived types should also be covered.
+
+Forbidden API rules may specify `alternative`, `nugget`, and `nuggetVersion` instead of a hard-coded `message`. The diagnostic then suggests the alternative and reads `project.assets.json` to instruct the developer to install the named NuGet package, or to update it when its restored version differs from `nuggetVersion`. Include `$(ProjectAssetsFile)` as an `AdditionalFiles` item for this check.
 
 Set `memberPrefix` to an empty string when a consuming repository deliberately
 enables other gates but does not adopt a field-prefix convention.
@@ -137,19 +136,6 @@ and `ParseValue` calls are also allowed when they return their declaring type,
 for example `using var document = JsonDocument.ParseValue(ref reader);`. An
 `out var` is likewise allowed for a static self-returning `TryParse`, for
 example `T.TryParse(raw, provider, out var result)` when the out type is `T`.
-
-`requireValidatedControllerRouteArguments` defaults to `true`. Every parameter
-of a controller action bearing an `HttpGet`, `HttpPost`, or other HTTP-method
-route attribute must derive from VV's `ValidatedValue` or `CrossValidatedValue`
-base class. A DTO parameter is allowed only when each of its public instance
-fields and properties is such a validated value.
-
-`requireDenyByDefaultRouteAuthorization` and
-`requireExplicitControllerRouteAuthorization` both default to `true`. When a
-project has controller routes, `Program.cs` must call
-`builder.EnableDenyByDefaultRouteAuthorization()` from
-`Owasp.Untrust.NoOwnershipNeeded`. Each controller route must then explicitly
-declare `[Authorize(...)]` or `[AllowAnonymous]` on the route method.
 
 ## Narrow null exceptions
 
